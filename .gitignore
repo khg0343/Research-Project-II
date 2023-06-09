@@ -41,3 +41,5 @@ configs/voc_ignore
 
 # MacOS
 .DS_Store
+tools/instances_train2014_partial.json
+tools/instances_valminusminival2014_partial.json

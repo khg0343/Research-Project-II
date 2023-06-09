@@ -31,6 +31,33 @@ VOC_CATEGORIES = ["__background",
     "aeroplane","bicycle","bird","boat","bottle","bus","car","cat","chair", "cow","diningtable","dog",
     "horse","motorbike","person","pottedplant","sheep","sofa","train","tvmonitor"]
 
+AIHUB_CATEGORIES = ["wheelchair", "truck", "tree_trunk", "traffic_sign", "traffic_light", "traffic_light_controller", "table", "stroller", 
+                    "stop", "scooter", "potted_plant", "pole", "person", "parking_meter", "power_controller", "movable_signage", "motorcycle", 
+                    "kiosk", "fire_hydrant", "dog", "chair", "cat", "carrier", "car", "bus", "bollard", "bicycle", "bench", "barricade",]
+
+def color_map(N=256, normalized=False):
+    def bitget(byteval, idx):
+        return ((byteval & (1 << idx)) != 0)
+    dtype = 'float32' if normalized else 'uint8'
+    cmap = np.zeros((N, 3), dtype=dtype)
+    for i in range(N):
+        r = g = b = 0
+        c = i
+        for j in range(8):
+            r = r | (bitget(c, 0) << 7-j)
+            g = g | (bitget(c, 1) << 7-j)
+            b = b | (bitget(c, 2) << 7-j)
+            c = c >> 3
+
+        cmap[i] = np.array([r, g, b])
+
+    cmap = cmap/255 if normalized else cmap
+    return cmap
+
+def call_cmap():
+    cmap = color_map()
+    return cmap
+
 def compute_colors_for_labels(labels):
     """ Simple function that adds fixed colors depending on the class """
     palette = torch.tensor([2 ** 25 - 1, 2 ** 15 - 1, 2 ** 21 - 1])
@@ -48,12 +75,18 @@ def overlay_boxes(image, predictions):
     """
     labels = predictions.get_field("labels")
     boxes = predictions.bbox
-    colors = compute_colors_for_labels(labels).tolist()
+    #colors = compute_colors_for_labels(labels).tolist()
+    cmap = call_cmap()
+    if labels.shape[0] !=1 :
+        colors = cmap[labels].tolist()
+    elif labels.shape[0] == 1:
+        colors = np.expand_dims(cmap[labels],0).tolist()
+
     for box, color in zip(boxes, colors):
         box = box.to(torch.int64)
         top_left, bottom_right = box[:2].tolist(), box[2:].tolist()
         image = cv2.rectangle(
-            image, tuple(top_left), tuple(bottom_right), tuple(color), 2
+            image, tuple(top_left), tuple(bottom_right), tuple(color), 3
         )
     return image
 
@@ -134,17 +167,25 @@ def overlay_class_names(image, predictions, CATEGORIES):
     """
     scores = predictions.get_field("scores").tolist()
     labels = predictions.get_field("labels").tolist()
+
+    cmap = call_cmap()
+    colors = cmap[labels].tolist()
     if not isinstance(CATEGORIES[0], str):
         labels = [CATEGORIES[i]['name'] for i in labels]
     else:
         labels = [CATEGORIES[i] for i in labels]
     boxes = predictions.bbox
     template = "{}: {:.2f}"
-    for box, score, label in zip(boxes, scores, labels):
+    for box, score, label, color in zip(boxes, scores, labels, colors):
         x, y = box[:2]
+        x = int(x.item())
+        y = int(y.item())
         s = template.format(label, score)
+        text_size, _ = cv2.getTextSize(s, cv2.FONT_HERSHEY_SIMPLEX, .7, 2)
+        text_w, text_h = text_size
+        cv2.rectangle(image, (x,y), (x + text_w, y - text_h), tuple(color), -1)
         cv2.putText(
-            image, s, (x, y), cv2.FONT_HERSHEY_SIMPLEX, .5, (255, 255, 255), 1
+            image, s, (x, y), cv2.FONT_HERSHEY_SIMPLEX, .7, (255, 255, 255), 2
         )
     return image
 
@@ -159,7 +200,7 @@ def vis_results(
     confidence_threshold = cfg.TEST.VIS_THRES
     mask_threshold = -1 if show_mask_heatmaps else 0.5
     masker = Masker(threshold=mask_threshold, padding=1)
-    
+    data_path = os.path.join(data_path, "images")
     for prediction, img_info in zip(predictions, img_infos):
         img_name = img_info['file_name']
         image = cv2.imread(os.path.join(data_path, img_name))
@@ -173,7 +214,7 @@ def vis_results(
             masks = prediction.get_field("mask")
             masks = masker([masks], [prediction])[0]
             prediction.add_field("mask", masks)
-            
+
         # select only prediction which have a `score` > confidence_threshold
         scores = prediction.get_field("scores")
         keep = torch.nonzero(scores > confidence_threshold, as_tuple=False).squeeze(1)
@@ -182,7 +223,7 @@ def vis_results(
         scores = prediction.get_field("scores")
         _, idx = scores.sort(0, descending=True)
         prediction = prediction[idx]
-        
+
         result = image.copy()
         if show_mask_heatmaps:
             result = create_mask_montage(result, prediction, masks_per_dim)
@@ -197,6 +238,8 @@ def vis_results(
                 CATEGORIES = COCO_CATEGORIES
             elif 'voc' in data_path:
                 CATEGORIES = VOC_CATEGORIES
+            elif 'aihub' in data_path:
+                CATEGORIES = AIHUB_CATEGORIES
             else:
                 raise ValueError
             result = overlay_class_names(result, prediction, CATEGORIES)
@@ -204,7 +247,7 @@ def vis_results(
         # save
         out_path = os.path.join(cfg['OUTPUT_DIR'], 'vis')
         if not os.path.exists(out_path):
-            os.makedirs(out_path)
+            os.makedirs(out_path, exist_ok=True)
         cv2.imwrite(os.path.join(out_path, img_name.replace('/', '-')), result)
         
 def vis_keypoints(img, kps, kp_thresh=2, alpha=0.7):
